@@ -1,0 +1,100 @@
+name: Build Linux deb
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag 名称（如 v2.7.5-linux）'
+        required: true
+        default: 'v2.7.5-linux'
+      release_name:
+        description: 'Release 显示名称'
+        required: false
+        default: 'MCTier Linux Build'
+      draft:
+        description: '草稿 Release（true=草稿待审核，false=直接发布）'
+        required: false
+        default: 'true'
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl wget file unzip pkg-config \
+            libssl-dev libgtk-3-dev librsvg2-dev patchelf \
+            policykit-1 libcap2-bin pulseaudio-utils \
+            libayatana-appindicator3-1 xdg-utils
+          # WebKitGTK 开发包（4.1 优先，回退 4.0）
+          if apt-cache show libwebkit2gtk-4.1-dev >/dev/null 2>&1; then
+            sudo apt-get install -y libwebkit2gtk-4.1-dev
+          else
+            sudo apt-get install -y libwebkit2gtk-4.0-dev
+          fi
+          # 托盘图标开发包
+          if apt-cache show libayatana-appindicator3-dev >/dev/null 2>&1; then
+            sudo apt-get install -y libayatana-appindicator3-dev
+          elif apt-cache show libappindicator3-dev >/dev/null 2>&1; then
+            sudo apt-get install -y libappindicator3-dev
+          fi
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Fetch EasyTier binaries
+        run: ./MCTier-Linux/scripts/fetch-binaries.sh
+
+      - name: Build deb
+        run: ./MCTier-Linux/scripts/build.sh --bundles deb
+
+      - name: Show artifacts
+        run: |
+          echo "=== bundle 目录 ==="
+          find src-tauri/target/release/bundle -maxdepth 3 -type f \( -name '*.deb' -o -name '*.AppImage' \) -exec ls -la {} \;
+
+      - name: Create Release & Upload deb
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag }}
+          name: ${{ github.event.inputs.release_name }}
+          draft: ${{ github.event.inputs.draft }}
+          files: |
+            src-tauri/target/release/bundle/deb/*.deb
+          body: |
+            ## MCTier Linux x86_64 deb 包
+
+            由 GitHub Actions 自动构建。
+
+            - **上游**: [pmh1314520/MCTier](https://github.com/pmh1314520/MCTier) v2.7.5
+            - **构建来源**: ${{ github.repository }}@${{ github.sha }}
+            - **平台**: Linux x86_64 (Debian 家族: Debian/Ubuntu/Deepin/UOS/Mint)
+            - **安装**: `sudo dpkg -i *.deb` 或双击安装
+
+            ### 功能限制（Linux 版）
+            - ✅ 组网、大厅、聊天室、文件夹共享
+            - ❌ 语音通话、屏幕共享（受上游 WebKitGTK WebRTC + GStreamer 限制）
+
+            ### 许可证说明
+            本 fork 仅供个人非商业使用，遵守上游 source-available 非商业许可。
+            原作者: 青云制作_彭明航。衍生项目须按相同协议公开源代码。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
